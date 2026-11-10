@@ -38,8 +38,10 @@ def db():
         CREATE TABLE IF NOT EXISTS bookmarks(id INTEGER PRIMARY KEY, video_id TEXT, start REAL, end REAL, text TEXT, category_id INTEGER, added REAL);
         CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY, video_id TEXT, start REAL, end REAL, path TEXT, added REAL);
         """)
-        if "upload_date" not in [r[1] for r in c.execute("PRAGMA table_info(videos)")]:
-            c.execute("ALTER TABLE videos ADD COLUMN upload_date TEXT")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(videos)")]
+        for col in ("upload_date", "meta"):
+            if col not in cols:
+                c.execute(f"ALTER TABLE videos ADD COLUMN {col} TEXT")
     return c
 
 
@@ -96,7 +98,7 @@ def hms(t):
     return f"{t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}"
 
 
-def index_lines(vid, lines, title, url, duration, lang, upload_date=None):
+def index_lines(vid, lines, title, url, duration, lang, upload_date=None, meta=None):
     words = [w for line in lines for w in line]
     wrows, trows, pos = [], [], 0
     for wi, (t, w) in enumerate(words):
@@ -109,16 +111,17 @@ def index_lines(vid, lines, title, url, duration, lang, upload_date=None):
         c.execute("DELETE FROM videos WHERE id=?", (vid,))
         c.execute("DELETE FROM words WHERE video_id=?", (vid,))
         c.execute("DELETE FROM tokens WHERE video_id=?", (vid,))
-        c.execute("INSERT INTO videos(id, title, url, duration, lang, added, nwords, upload_date) VALUES(?,?,?,?,?,?,?,?)", (vid, title or vid, url, duration, lang, time.time(), len(words), upload_date))
+        c.execute("INSERT INTO videos(id, title, url, duration, lang, added, nwords, upload_date, meta) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (vid, title or vid, url, duration, lang, time.time(), len(words), upload_date, json.dumps(meta) if meta else None))
         c.executemany("INSERT INTO words VALUES(?,?,?,?)", wrows)
         c.executemany("INSERT INTO tokens VALUES(?,?,?,?,?)", trows)
         _version[0] += 1
 
 
-def index_file(path, vid, title=None, duration=None, lang="fr", url=None, upload_date=None):
+def index_file(path, vid, title=None, duration=None, lang="fr", url=None, upload_date=None, meta=None):
     path = Path(path)
     lines = parse_vtt(path.read_text(encoding="utf-8", errors="replace"))
-    index_lines(vid, lines, title, url or f"https://www.youtube.com/watch?v={vid}", duration, lang, upload_date)
+    index_lines(vid, lines, title, url or f"https://www.youtube.com/watch?v={vid}", duration, lang, upload_date, meta)
     write_txt(vid, "".join(f"{hms(l[0][0])}\t{' '.join(w for _, w in l)}\n" for l in lines), path.with_suffix(".txt"))
     path.unlink()
 
@@ -143,6 +146,7 @@ def write_txt(vid, body=None, path=None):
     head = [
         f"Titre : {v['title']}",
         f"Lien : {v['url']}",
+        f"Chaîne : {json.loads(v['meta'] or '{}').get('channel') or 'inconnue'}",
         f"Date de publication : {d[:4]}-{d[4:6]}-{d[6:]}" if d else "Date de publication : inconnue",
         f"Durée : {hms(v['duration'] or 0)}",
         f"Ajoutée le : {time.strftime('%Y-%m-%d %H:%M', time.localtime(v['added']))}",
@@ -159,7 +163,22 @@ def video(vid):
     with db() as c:
         c.row_factory = sqlite3.Row
         r = c.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
-    return dict(r) if r else None
+    if not r:
+        return None
+    v = dict(r)
+    v["meta"] = json.loads(v["meta"] or "{}")
+    return v
+
+
+def set_meta(vid, upload_date, meta):
+    with db() as c:
+        c.execute("UPDATE videos SET upload_date=?, meta=? WHERE id=?", (upload_date, json.dumps(meta), vid))
+    write_txt(vid)
+
+
+def is_full(cl, duration):
+    """Id d'un fichier qui couvre toute la vidéo (à 2 s près à la fin)."""
+    return covering(cl, 0, max(0, (duration or 0) - 2))
 
 
 def words(vid):
@@ -175,8 +194,11 @@ def setting(key, default):
     return r[0] if r else default
 
 
+QUALITIES = ("best", "1080", "720", "480", "360", "audio")
+
+
 def settings():
-    return {"subs_dir": setting("subs_dir", str(DEFAULT_SUB)), "videos_dir": setting("videos_dir", str(DEFAULT_VIDEOS))}
+    return {"subs_dir": setting("subs_dir", str(DEFAULT_SUB)), "videos_dir": setting("videos_dir", str(DEFAULT_VIDEOS)), "quality": setting("quality", "best")}
 
 
 def load_settings():
@@ -184,8 +206,10 @@ def load_settings():
     SUB = Path(settings()["subs_dir"])
 
 
-def save_settings(subs_dir, videos_dir):
+def save_settings(subs_dir, videos_dir, quality="best"):
     global SUB
+    if quality not in QUALITIES:
+        raise ValueError(f"Qualité inconnue : {quality}")
     new, vids = Path(subs_dir).expanduser(), Path(videos_dir).expanduser()
     for p in (new, vids):
         if not p.is_absolute():
@@ -198,7 +222,7 @@ def save_settings(subs_dir, videos_dir):
                 shutil.move(str(f), str(new / f.name))
         SUB = new
     with db() as c:
-        c.executemany("INSERT OR REPLACE INTO settings VALUES(?,?)", [("subs_dir", str(new)), ("videos_dir", str(vids))])
+        c.executemany("INSERT OR REPLACE INTO settings VALUES(?,?)", [("subs_dir", str(new)), ("videos_dir", str(vids)), ("quality", quality)])
 
 
 # --- Signets ---
@@ -242,11 +266,12 @@ def delete_category(cid):
         write_txt(vid)
 
 
-def list_bookmarks():
+def list_bookmarks(vid=None):
     with db() as c:
         c.row_factory = sqlite3.Row
         rows = [dict(r) for r in c.execute(
-            "SELECT b.*, v.title, v.url, v.duration FROM bookmarks b JOIN videos v ON v.id=b.video_id ORDER BY b.added DESC")]
+            "SELECT b.*, v.title, v.url, v.duration, k.name AS category FROM bookmarks b JOIN videos v ON v.id=b.video_id "
+            "LEFT JOIN categories k ON k.id=b.category_id" + (" WHERE b.video_id=? ORDER BY b.start" if vid else " ORDER BY b.added DESC"), (vid,) if vid else ())]
     cl = clips()
     for b in rows:
         b["clip"] = covering(cl.get(b["video_id"], []), b["start"], b["end"])
@@ -305,12 +330,6 @@ def clip(cid):
 def covering(cl, a, b):
     """Id du premier extrait téléchargé qui contient tout le passage [a, b]."""
     return next((c["id"] for c in cl if c["start"] - 0.05 <= a and b <= c["end"] + 0.05), None)
-
-
-def find_clip(vid, start, end):
-    with db() as c:
-        r = c.execute("SELECT id, path FROM clips WHERE video_id=? AND abs(start-?)<0.05 AND abs(end-?)<0.05", (vid, start, end)).fetchone()
-    return r[0] if r and Path(r[1]).exists() else None
 
 
 def add_clip(vid, start, end, path):
@@ -493,10 +512,10 @@ def search(q, mode="all", tol=85, window=30, gap=1, partial=False, videos=None, 
                 h["bookmark"] = bms.get((vid, round(rows[0][2], 2)))
                 del h["pos"]
             results.append({"id": vid, "hits": hits, "score": sum(h["score"] for h in hits), "clips": cl.get(vid, [])})
-        meta = {r[0]: r for r in c.execute("SELECT id, title, url, duration, added FROM videos")}
+        meta = {r[0]: r for r in c.execute("SELECT id, title, url, duration, added, upload_date, json_extract(meta, '$.channel') FROM videos")}
     for r in results:
-        m = meta.get(r["id"]) or (r["id"], r["id"], "", 0, 0)
-        r.update(title=m[1], url=m[2], duration=m[3], added=m[4])
+        m = meta.get(r["id"]) or (r["id"], r["id"], "", 0, 0, None, None)
+        r.update(title=m[1], url=m[2], duration=m[3], added=m[4], upload_date=m[5], channel=m[6], full=is_full(r["clips"], m[3]))
     key = {"score": lambda r: -r["score"], "hits": lambda r: -len(r["hits"]), "recent": lambda r: -r["added"], "title": lambda r: r["title"].lower()}.get(sort, lambda r: -r["score"])
     results.sort(key=key)
     if limit:

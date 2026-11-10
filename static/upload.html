@@ -1,13 +1,17 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>Upload</title><link rel="stylesheet" href="/static/app.css"></head>
-<body><main>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ajouter · Audio-search</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main style="max-width:860px">
 <h1>Ajouter une vidéo ou une playlist</h1>
-<form class="panel row" id="f">
-  <input class="grow" id="url" placeholder="https://www.youtube.com/watch?v=… ou https://www.youtube.com/playlist?list=…" required aria-label="URL">
-  <input id="lang" value="fr" size="4" aria-label="Langue des sous-titres" title="Langue des sous-titres">
-  <button id="go">Télécharger</button>
+<form id="f">
+  <div class="searchbox">
+    <svg class="icon big" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+    <input id="url" type="url" placeholder="Lien YouTube d'une vidéo ou d'une playlist" required aria-label="Lien YouTube">
+    <input id="lang" value="fr" size="3" aria-label="Langue des sous-titres" title="Langue des sous-titres (fr, en…)" style="width:56px;text-align:center">
+    <button id="go">Ajouter</button>
+  </div>
+  <p class="hint muted">Seuls les sous-titres sont récupérés, pas la vidéo. Le champ de droite donne la langue des sous-titres (fr, en, es…).</p>
 </form>
-<div id="jobs"></div>
+<div id="jobs" style="margin-top:24px"></div>
 </main>
 <script src="/static/app.js"></script>
 <script>
@@ -16,17 +20,19 @@ $('#f').addEventListener('submit', async ev => {
   const r = await api('/api/download', { url: $('#url').value, lang: $('#lang').value });
   if (r.error) return alert(r.error);
   $('#url').value = '';
-  const box = h('div', { class: 'panel' });
+  const box = h('div', { class: 'job', role: 'status' });
   $('#jobs').prepend(box);
   const tick = async () => {
     const j = await api('/api/jobs/' + r.id);
     const n = j.done + j.skipped + j.errors.length;
-    box.replaceChildren(
-      h('div', { class: 'muted' }, j.url),
-      h('progress', { max: j.total || 1, value: j.finished ? (j.total || 1) : n }),
-      h('div', {}, j.finished ? 'Terminé' : (j.total ? `${n} / ${j.total}` : 'Analyse du lien…'), j.current ? ` — ${j.current}` : ''),
-      h('div', { class: 'muted' }, `${j.done} ajoutée(s), ${j.skipped} déjà présente(s), ${j.errors.length} erreur(s)`),
-      ...j.errors.map(e => h('div', { class: 'err' }, e)));
+    const pct = j.finished ? 100 : j.total ? Math.round(100 * n / j.total) : null;
+    fill(box,
+      h('div', { class: 'row' }, j.finished ? icon(j.errors.length ? 'alert' : 'check', j.errors.length ? 'err' : 'okc') : icon('download'),
+        h('b', { class: 'grow' }, j.finished ? 'Terminé' : j.total ? `${n} sur ${j.total}` : 'Lecture du lien…'), h('span', { class: 'muted' }, j.current || '')),
+      h('div', { class: 'bar' + (pct == null ? ' indet' : '') }, h('span', { style: `width:${pct ?? 0}%` })),
+      h('div', { class: 'muted' }, `${j.done} ajoutée${j.done > 1 ? 's' : ''}, ${j.skipped} déjà présente${j.skipped > 1 ? 's' : ''}, ${j.errors.length} erreur${j.errors.length > 1 ? 's' : ''}`, h('br'), j.url),
+      j.errors.map(e => h('div', { class: 'err' }, e)),
+      j.finished && j.done ? h('a', { href: '/search' }, 'Chercher dans ces vidéos') : null);
     if (!j.finished) setTimeout(tick, 1000);
   };
   tick();

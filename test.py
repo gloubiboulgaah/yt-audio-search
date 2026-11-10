@@ -95,15 +95,19 @@ assert core.list_bookmarks()[0]["clip"] is None
 assert "Téléchargements (1)" in (tmp / "aaa.fr.txt").read_text() and str(clipf) in (tmp / "aaa.fr.txt").read_text()
 vtt = core.clip_vtt("aaa", 16.0, 18.2)
 assert vtt.startswith("WEBVTT") and "00:00:00.680 --> 00:00:02.200" in vtt and "Salut" in vtt, vtt
-assert core.find_clip("aaa", 16.0, 18.2) == k
 clipf.unlink()
-assert core.clips() == {} and core.find_clip("aaa", 16.0, 18.2) is None  # fichier supprimé => plus hors ligne
+assert core.clips() == {}  # fichier supprimé => plus hors ligne
 
 # Changer le dossier des sous-titres déplace nos fichiers, pas les autres
 (tmp / "autre.txt").write_text("à moi")
-core.save_settings(str(tmp / "subs2"), str(tmp / "vids"))
+core.save_settings(str(tmp / "subs2"), str(tmp / "vids"), "720")
+try:
+    core.save_settings(str(tmp / "subs2"), str(tmp / "vids"), "8k")
+    raise AssertionError("qualité invalide acceptée")
+except ValueError:
+    pass
 assert (tmp / "subs2" / "bbb.fr.txt").exists() and not (tmp / "bbb.fr.txt").exists() and (tmp / "autre.txt").exists()
-assert core.settings()["videos_dir"] == str(tmp / "vids") and core.txt_file("bbb")
+assert core.settings()["videos_dir"] == str(tmp / "vids") and core.settings()["quality"] == "720" and core.txt_file("bbb")
 core.delete_video("aaa")
 assert S("peur") == {} and not core.txt_file("aaa") and core.list_bookmarks() == []
 print("ok")

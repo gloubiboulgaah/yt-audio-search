@@ -1,32 +1,43 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>Paramètres</title><link rel="stylesheet" href="/static/app.css"></head>
-<body><main>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Paramètres · Audio-search</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main style="max-width:760px">
 <h1>Paramètres</h1>
-<form class="panel" id="f">
-  <label class="muted" for="subs_dir">Dossier des fichiers texte des sous-titres (les fichiers existants y sont déplacés)</label>
-  <div class="row"><input class="grow" id="subs_dir" required><button type="button" class="ghost" data-pick="subs_dir">Parcourir…</button></div>
-  <br>
-  <label class="muted" for="videos_dir">Dossier des vidéos et extraits téléchargés (un sous-dossier par vidéo)</label>
-  <div class="row"><input class="grow" id="videos_dir" required><button type="button" class="ghost" data-pick="videos_dir">Parcourir…</button></div>
-  <div class="row end"><span id="msg" class="muted" role="status"></span><button>Enregistrer</button></div>
+<form id="f">
+  <section class="panel">
+    <h3>Sous-titres</h3>
+    <label class="muted" for="subs_dir">Dossier des fichiers texte. Les fichiers déjà créés y sont déplacés.</label>
+    <div class="row" style="margin-top:6px"><input class="grow" id="subs_dir" required><button type="button" class="ghost" data-pick="subs_dir">Parcourir…</button></div>
+  </section>
+  <section class="panel">
+    <h3>Téléchargements</h3>
+    <label class="muted" for="videos_dir">Dossier des vidéos et extraits. Chaque vidéo a son propre sous-dossier.</label>
+    <div class="row" style="margin-top:6px"><input class="grow" id="videos_dir" required><button type="button" class="ghost" data-pick="videos_dir">Parcourir…</button></div>
+    <label class="muted" for="quality" style="display:block;margin-top:16px">Qualité par défaut. Plus elle est basse, plus le téléchargement est rapide et le fichier léger. Elle peut être changée à chaque téléchargement.</label>
+    <div class="row" style="margin-top:6px" id="qslot"></div>
+  </section>
+  <div class="row end"><span id="msg" class="muted" role="status"></span><button>Enregistrer les paramètres</button></div>
 </form>
 </main>
 <script src="/static/app.js"></script>
 <script>
-const fill = s => { $('#subs_dir').value = s.subs_dir; $('#videos_dir').value = s.videos_dir; };
+const fill = s => {
+  $('#subs_dir').value = s.subs_dir;
+  $('#videos_dir').value = s.videos_dir;
+  $('#qslot').replaceChildren(qualitySelect('quality', s.quality));
+};
 api('/api/settings').then(fill);
 document.querySelectorAll('[data-pick]').forEach(b => b.onclick = async () => {
-  $('#msg').textContent = 'Choisissez un dossier dans la fenêtre qui s’est ouverte…';
+  $('#msg').textContent = 'Choisissez un dossier dans la fenêtre qui vient de s’ouvrir…';
   const r = await api('/api/pick-folder', {});
   $('#msg').textContent = '';
   if (r.path) $('#' + b.dataset.pick).value = r.path;
 });
 $('#f').addEventListener('submit', async e => {
   e.preventDefault();
-  const r = await api('/api/settings', { subs_dir: $('#subs_dir').value, videos_dir: $('#videos_dir').value });
+  const r = await api('/api/settings', { subs_dir: $('#subs_dir').value, videos_dir: $('#videos_dir').value, quality: $('#quality').value });
   if (r.error) return $('#msg').replaceChildren(h('span', { class: 'err' }, r.error));
   fill(r);
-  $('#msg').textContent = 'Enregistré.';
+  $('#msg').textContent = 'Paramètres enregistrés.';
 });
 </script>
 </body></html>

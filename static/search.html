@@ -1,122 +1,107 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>Recherche</title><link rel="stylesheet" href="/static/app.css"></head>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Recherche · Audio-search</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
-<h1>Recherche</h1>
-<form class="panel" id="f">
-  <div class="row">
-    <input class="grow" id="q" placeholder='mot, plusieurs mots, "phrase exacte", préfix*, -exclu' aria-label="Recherche" autofocus>
+<h1 class="sr">Recherche</h1>
+<form id="f">
+  <div class="searchbox">
+    <svg class="icon big" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="q" type="search" placeholder="Chercher un mot ou une phrase dans les vidéos" aria-label="Recherche" autofocus>
+    <select id="mode" aria-label="Mode de recherche">
+      <option value="all">Tous les mots</option>
+      <option value="any">Au moins un mot</option>
+      <option value="phrase">Mots dans l'ordre</option>
+    </select>
     <button>Rechercher</button>
   </div>
-  <div class="opts">
-    <label>Mode
-      <select id="mode">
-        <option value="all">Tous les mots</option>
-        <option value="any">Au moins un mot</option>
-        <option value="phrase">Phrase (mots dans l'ordre)</option>
-      </select></label>
-    <label>Tolérance : <span id="tolv"></span>
-      <input type="range" id="tol" min="50" max="100" value="85"></label>
-    <label>Fenêtre de proximité (s, 0 = toute la vidéo)
-      <input type="number" id="window" min="0" value="30"></label>
-    <label>Mots intercalés max dans une phrase
-      <input type="number" id="gap" min="0" max="10" value="1"></label>
-    <label>Mots de contexte dans la citation
-      <input type="number" id="context" min="0" max="60" value="10"></label>
-    <label>Tri
-      <select id="sort">
-        <option value="score">Pertinence</option>
-        <option value="hits">Nombre d'occurrences</option>
-        <option value="recent">Ajout récent</option>
-        <option value="title">Titre</option>
-      </select></label>
-    <label>Max vidéos (0 = illimité)
-      <input type="number" id="limit" min="0" value="0"></label>
-    <label>Vidéos (aucune = toutes)
-      <select id="videos" multiple size="3"></select></label>
-    <label class="check"><input type="checkbox" id="partial"> Le terme peut être une partie d'un mot</label>
-  </div>
+  <p class="hint muted">Astuces : <code>"phrase exacte"</code> <code>préfixe*</code> <code>-exclu</code> pour écarter les vidéos qui contiennent ce mot.</p>
+  <details class="adv">
+    <summary>Options avancées</summary>
+    <div class="opts">
+      <label>Tolérance aux fautes : <span id="tolv"></span>
+        <input type="range" id="tol" min="50" max="100" value="85"></label>
+      <label>Écart max entre les mots (secondes, 0 = toute la vidéo)
+        <input type="number" id="window" min="0" value="30"></label>
+      <label>Mots intercalés autorisés dans une phrase
+        <input type="number" id="gap" min="0" max="10" value="1"></label>
+      <label>Mots de contexte autour de la citation
+        <input type="number" id="context" min="0" max="60" value="10"></label>
+      <label>Trier par
+        <select id="sort">
+          <option value="score">Pertinence</option>
+          <option value="hits">Nombre de citations</option>
+          <option value="recent">Ajout récent</option>
+          <option value="title">Titre</option>
+        </select></label>
+      <label>Nombre max de vidéos (0 = toutes)
+        <input type="number" id="limit" min="0" value="0"></label>
+      <label>Chercher seulement dans (aucune = toutes)
+        <select id="videos" multiple size="4"></select></label>
+      <label class="check"><input type="checkbox" id="partial"> Trouver aussi le terme à l'intérieur d'un mot</label>
+    </div>
+  </details>
 </form>
-<div id="info" class="muted"></div>
+<div id="info" class="muted" role="status"></div>
 <div id="out"></div>
 </main>
 <script src="/static/app.js"></script>
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
-const players = {};
-const ytFailed = new Set();
-const showTol = () => $('#tolv').textContent = $('#tol').value == 100 ? '100 % (exact)' : $('#tol').value + ' %';
+const showTol = () => $('#tolv').textContent = $('#tol').value == 100 ? 'aucune (mot exact)' : $('#tol').value + ' %';
 $('#tol').addEventListener('input', showTol); showTol();
-api('/api/videos').then(vs => $('#videos').replaceChildren(...vs.map(v => h('option', { value: v.id }, v.title))));
-
-function play(card, v, t) {
-  t = Math.max(0, t - 1);
-  if (!window.YT?.Player || ytFailed.has(v.id)) return playLocal(card, v, t);
-  const p = players[v.id];
-  if (p && !p.local && p.seekTo) { p.seekTo(t, true); p.playVideo(); return; }
-  const div = h('div');
-  card.querySelector('.player').replaceChildren(div);
-  players[v.id] = new YT.Player(div, { videoId: v.id, playerVars: { start: Math.floor(t), autoplay: 1 }, events: {
-    onReady: e => { e.target.seekTo(t, true); e.target.playVideo(); },
-    onError: () => { ytFailed.add(v.id); playLocal(card, v, t); }, // vidéo retirée / privée / non intégrable
-  } });
-}
-
-// Lecture depuis un extrait téléchargé qui contient t (le plus long d'abord).
-function playLocal(card, v, t) {
-  const slot = card.querySelector('.player');
-  const c = v.clips.find(c => c.start - 0.05 <= t + 1 && t < c.end);
-  if (!c) {
-    delete players[v.id];
-    return slot.replaceChildren(h('div', { class: 'nooff' }, 'YouTube indisponible et ce passage n’est pas téléchargé. ', h('a', { href: v.url, target: '_blank' }, 'Ouvrir sur YouTube')));
-  }
-  let p = players[v.id];
-  if (!p?.local || p.clip !== c) {
-    const el = h('video', { controls: '', autoplay: '', onclick: e => e.stopPropagation(), src: `/api/clips/${c.id}/file` }, h('track', { kind: 'subtitles', srclang: 'fr', label: 'Sous-titres', src: `/api/clips/${c.id}/vtt`, default: '' }));
-    slot.replaceChildren(el);
-    p = players[v.id] = { local: el, clip: c, getCurrentTime: () => c.start + el.currentTime, getDuration: () => v.duration };
-  }
-  p.local.currentTime = Math.max(0, t - c.start);
-  p.local.play();
-}
-
-setInterval(() => {
-  for (const [id, p] of Object.entries(players)) {
-    const c = document.querySelector(`[data-id="${CSS.escape(id)}"] .cursor`);
-    if (c && p.getCurrentTime && p.getDuration()) c.style.left = (100 * p.getCurrentTime() / p.getDuration()) + '%';
-  }
-}, 500);
+api('/api/videos').then(vs => {
+  $('#videos').replaceChildren(...vs.map(v => h('option', { value: v.id }, v.title)));
+  if (!vs.length) $('#out').replaceChildren(h('div', { class: 'empty' }, icon('plus'), h('b', {}, 'Aucune vidéo pour l’instant'), 'Ajoutez une vidéo ou une playlist YouTube pour chercher dans ses sous-titres. ', h('a', { href: '/upload' }, 'Ajouter une vidéo')));
+});
 
 function card(v) {
   const dur = v.duration || Math.max(...v.hits.map(x => x.t)) + 5;
-  const el = h('div', { class: 'video', 'data-id': v.id });
-  const go = t => play(el, v, t);
-  const ticks = v.hits.map(x => x.t);
-  const dl = (start, end) => openDownload({ vid: v.id, title: v.title, dur, start, end, ticks });
-  document.addEventListener('clip', e => { if (e.detail.video_id === v.id) v.clips.push(e.detail); });
-  const bar = h('div', { class: 'bar', title: 'Cliquer pour aller à ce moment', onclick: e => { const r = bar.getBoundingClientRect(); go(dur * (e.clientX - r.left) / r.width + 1); } },
-    h('div', { class: 'cursor' }),
-    ...v.hits.map(x => h('div', { class: 'tick', style: `left:${100 * x.t / dur}%`, title: fmt(x.t), onclick: e => { e.stopPropagation(); go(x.t); } })));
-  el.append(
-    h('div', { class: 'row' }, h('h2', { class: 'grow' }, v.title), h('button', { class: 'ghost', type: 'button', onclick: () => dl(0, dur) }, icon('download'), ' Télécharger…')),
-    h('div', { class: 'muted' }, h('a', { href: v.url, target: '_blank' }, v.url), ` · ${v.hits.length} occurrence(s) · ${fmt(dur)}`, v.clips.length ? ` · ${v.clips.length} fichier(s) hors ligne` : ''),
-    h('div', { class: 'player', onclick: () => go(v.hits[0].t) }, h('img', { src: `https://i.ytimg.com/vi/${encodeURIComponent(v.id)}/hqdefault.jpg`, alt: v.title })),
-    bar,
-    ...v.hits.map(x => {
+  const slot = h('div', { class: 'player', hidden: '' });
+  const rows = [];
+  const tl = timeline(dur, v.hits.map(x => x.t), v.clips, t => player.play(t));
+  const player = createPlayer(slot, v, t => {
+    tl.setTime(t);
+    rows.forEach((r, i) => r.classList.toggle('playing', t >= v.hits[i].quote[0][2] - 0.5 && t <= v.hits[i].end));
+  });
+  const dl = (start, end) => openDownload({ vid: v.id, title: v.title, dur, start, end, ticks: v.hits.map(x => x.t) });
+  const offline = h('span', {});
+  const showOffline = () => offline.replaceChildren(v.full ? h('span', { class: 'chip ok' }, icon('check'), 'Vidéo complète hors ligne') : v.clips.length ? h('span', { class: 'chip ok' }, icon('check'), `${v.clips.length} extrait${v.clips.length > 1 ? 's' : ''} hors ligne`) : '');
+  showOffline();
+  const el = h('article', { class: 'result', 'data-id': v.id },
+    h('div', { class: 'result-head' },
+      thumb(v.id, v.title, () => player.play(v.hits[0].t), dur),
+      h('div', { class: 'meta' },
+        h('h2', {}, h('a', { href: `/video?id=${encodeURIComponent(v.id)}` }, v.title)),
+        h('div', { class: 'facts' },
+          v.channel && h('span', {}, icon('user'), v.channel),
+          v.upload_date && h('span', {}, icon('calendar'), fmtDate(v.upload_date)),
+          h('span', {}, icon('search'), `${v.hits.length} citation${v.hits.length > 1 ? 's' : ''}`)),
+        offline,
+        h('div', { class: 'acts' },
+          h('button', { class: 'ghost small', type: 'button', onclick: () => dl(0, dur) }, icon('download'), 'Télécharger…'),
+          h('a', { class: 'btn ghost small', href: `/video?id=${encodeURIComponent(v.id)}` }, 'Fiche de la vidéo')))),
+    slot,
+    tl,
+    h('div', { class: 'tl-scale', 'aria-hidden': 'true' }, h('span', {}, '0:00'), h('span', {}, fmtShort(dur))),
+    h('ul', { class: 'hits' }, v.hits.map(x => {
       const found = x.quote.filter(q => q[1]).map(q => q[2]);
       const start = x.quote[0][2];
-      return h('div', { class: 'hit' },
-        h('a', { class: 'tc', href: `${v.url}&t=${Math.floor(x.t)}s`, onclick: e => { e.preventDefault(); go(x.t); } }, fmt(x.t)),
-        h('div', { class: 'grow' }, '… ', ...x.quote.map(([w, m]) => [m ? h('mark', {}, w) : w, ' ']), '…'),
+      const li = h('li', { class: 'hit' },
+        h('button', { class: 'tc', type: 'button', title: 'Lire à partir de ce moment', onclick: () => player.play(x.t) }, icon('play'), fmt(x.t)),
+        h('div', { class: 'quote' }, '… ', x.quote.map(([w, m]) => [m ? h('mark', {}, w) : w, ' ']), '…'),
         h('div', { class: 'acts' },
           bookmarkBtn({ video_id: v.id, start, end: x.end, text: x.quote.map(q => q[0]).join(' ') }, x.bookmark),
           offlineBtn(v.id, Math.min(...found), Math.max(...found), x.clip, () => dl(start, x.end))));
-    }));
+      rows.push(li);
+      return li;
+    })));
+  el.onclip = c => { v.clips.push(c); tl.addClip(c); if (c.start < 0.05 && c.end >= dur - 2) v.full = c.id; showOffline(); };
   return el;
 }
+document.addEventListener('clip', e => document.querySelectorAll(`.result[data-id="${CSS.escape(e.detail.video_id)}"]`).forEach(el => el.onclip(e.detail)));
 
 $('#f').addEventListener('submit', async ev => {
   ev.preventDefault();
-  for (const k in players) delete players[k];
+  if (!$('#q').value.trim()) return $('#q').focus();
   $('#info').textContent = 'Recherche…';
   const body = Object.fromEntries(['q', 'mode', 'tol', 'window', 'gap', 'context', 'sort', 'limit'].map(k => [k, $('#' + k).value]));
   body.partial = $('#partial').checked;
@@ -124,10 +109,10 @@ $('#f').addEventListener('submit', async ev => {
   const t0 = performance.now();
   const r = await api('/api/search', body);
   const exp = Object.entries(r.expansions).filter(([k, v]) => v.length > 1 || v[0] !== k);
-  $('#info').replaceChildren(
-    h('div', {}, `${r.results.length} vidéo(s), ${r.total_hits} occurrence(s) — ${Math.round(performance.now() - t0)} ms`),
-    ...exp.map(([k, v]) => h('div', { class: 'chips' }, `« ${k} » → `, ...v.map(w => h('span', {}, w)))));
-  $('#out').replaceChildren(...r.results.map(card));
+  fill($('#info'),
+    h('div', {}, `${r.total_hits} citation${r.total_hits > 1 ? 's' : ''} dans ${r.results.length} vidéo${r.results.length > 1 ? 's' : ''}, en ${Math.round(performance.now() - t0)} ms`),
+    ...exp.map(([k, v]) => h('div', { class: 'chips' }, `« ${k} » inclut aussi : `, v.filter(w => w !== k).map(w => h('span', {}, w)))));
+  $('#out').replaceChildren(...(r.results.length ? r.results.map(card) : [h('div', { class: 'empty' }, icon('search'), h('b', {}, 'Aucune citation trouvée'), 'Essayez un autre mot, baissez la tolérance aux fautes dans les options avancées, ou utilisez préfixe*.')]));
 });
 </script>
 </body></html>

@@ -1,8 +1,10 @@
+import json
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from pathlib import Path
@@ -55,7 +57,7 @@ def fetch(entries, job, lang):
                 f = f or find_vtt(vid)
                 if not f:
                     raise ValueError(f"pas de sous-titres « {lang} »")
-                core.index_file(f, vid, info.get("title"), info.get("duration"), f.name.split(".")[-2], info.get("webpage_url"), info.get("upload_date"))
+                core.index_file(f, vid, info.get("title"), info.get("duration"), f.name.split(".")[-2], info.get("webpage_url"), info.get("upload_date"), meta_of(info))
                 job["done"] += 1
             except Exception as ex:
                 job["errors"].append(f"{e.get('title') or vid}: {ex}")
@@ -74,6 +76,20 @@ def run_job(job, url, lang):
     job["finished"] = True
 
 
+META = ("channel", "channel_url", "uploader", "view_count", "like_count", "comment_count", "channel_follower_count",
+        "categories", "tags", "description", "thumbnail")
+
+
+def meta_of(info):
+    return {k: info[k] for k in META if info.get(k) is not None} or None
+
+
+def refresh_meta(vid, y=None):
+    v = core.video(vid)
+    info = (y or YoutubeDL({"quiet": True, "no_warnings": True})).extract_info(v["url"], download=False, process=False)
+    core.set_meta(vid, info.get("upload_date") or v["upload_date"], {**v["meta"], **(meta_of(info) or {})})
+
+
 def safe(s):
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", s).strip(" .")[:100] or "video"
 
@@ -82,8 +98,32 @@ def stamp(t):
     return f"{core.hms(t).replace(':', '-')}.{int(t * 10) % 10}"
 
 
-def run_clip(job, vid, start, end):
+QUALITY_LABEL = {"best": "meilleure qualité", "1080": "1080p", "720": "720p", "480": "480p", "360": "360p", "audio": "audio seul"}
+
+
+def fmt_for(q):
+    """Sélecteur yt-dlp : mp4 h264/aac d'abord (lisible dans le navigateur), plafonné à la hauteur choisie."""
+    if q == "audio":
+        return "ba[ext=m4a]/ba/b"
+    cap = "" if q == "best" else f"[height<={q}]"
+    return f"bv*{cap}[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/b{cap}[ext=mp4]/bv*{cap}+ba/b{cap}/b"
+
+
+def run_clip(job, vid, start, end, quality):
     """Télécharge la vidéo entière (end None) ou l'extrait [start, end] dans videos/<titre [id]>/."""
+    sizes = {}
+
+    def progress(d):
+        # Vidéo entière : octets reçus (vidéo puis audio). Extrait : ffmpeg ne donne rien avant la fin.
+        if d["status"] == "downloading" and (tot := d.get("total_bytes") or d.get("total_bytes_estimate")):
+            sizes[d["info_dict"].get("format_id")] = (d.get("downloaded_bytes") or 0, tot)
+            job.update(done_bytes=sum(a for a, _ in sizes.values()), total_bytes=sum(b for _, b in sizes.values()), phase="Téléchargement")
+            job["progress"] = job["done_bytes"] / job["total_bytes"]
+
+    def post(d):
+        if d["status"] == "started" and d["postprocessor"] == "Merger":
+            job.update(phase="Assemblage audio + vidéo", progress=None)
+
     try:
         v = core.video(vid)
         full = end is None
@@ -91,14 +131,14 @@ def run_clip(job, vid, start, end):
         # Un seul dossier par vidéo : on réutilise celui qui finit par [id], même si le titre a changé.
         folder = next((d for d in root.glob("*" + core.glob_escape(f"[{vid}]")) if d.is_dir()), None) \
             or root / safe(f"{v['title'][:80]} [{vid}]")  # titre coupé : limite de 260 caractères des chemins Windows
-        name = safe(v["title"][:40]) + (" [complet]" if full else f" [{stamp(start)} - {stamp(end)}]")
+        name = safe(v["title"][:40]) + (" [complet]" if full else f" [{stamp(start)} - {stamp(end)}]") + ("" if quality == "best" else f" [{quality if quality == 'audio' else quality + 'p'}]")
         opts = {
-            # mp4 h264/aac en priorité : lisible directement dans le navigateur
-            "format": "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+            "format": fmt_for(quality),
             "merge_output_format": "mp4",
             "outtmpl": str(folder / f"{name}.%(ext)s"),
             "ffmpeg_location": shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe(),
             "quiet": True, "no_warnings": True, "noprogress": True,
+            "progress_hooks": [progress], "postprocessor_hooks": [post],
         }
         if not full:
             opts.update(download_ranges=download_range_func(None, [(start, end)]), force_keyframes_at_cuts=True)
@@ -111,7 +151,7 @@ def run_clip(job, vid, start, end):
         job["clip"] = core.clip(core.add_clip(vid, start, end, path))
     except Exception as ex:
         job["errors"].append(str(ex))
-    job["finished"] = True
+    job.update(finished=True, finished_at=time.time())
 
 
 def import_existing():
@@ -124,18 +164,14 @@ def import_existing():
 
 
 def backfill():
-    """Anciennes vidéos : récupère la date de publication et ajoute l'en-tête aux fichiers texte."""
-    with YoutubeDL({"quiet": True, "no_warnings": True}) as y:
-        for v in core.list_videos():
-            if not v["upload_date"]:
-                try:
-                    d = y.extract_info(v["url"], download=False, process=False).get("upload_date")
-                    with core.db() as c:
-                        c.execute("UPDATE videos SET upload_date=? WHERE id=?", (d, v["id"]))
-                except Exception:
-                    pass  # hors ligne ou vidéo retirée : on réessaiera au prochain lancement
-            if (f := core.txt_file(v["id"])) and (not f.read_text(encoding="utf-8").startswith("# ") or not v["upload_date"]):
-                core.write_txt(v["id"])
+    """Anciennes vidéos : récupère date, chaîne, vues… et met à jour l'en-tête des fichiers texte."""
+    y = YoutubeDL({"quiet": True, "no_warnings": True})
+    for v in core.list_videos():
+        if not v["meta"]:
+            try:
+                refresh_meta(v["id"], y)
+            except Exception:
+                pass  # hors ligne ou vidéo retirée : on réessaiera au prochain lancement
 
 
 @app.get("/")
@@ -145,7 +181,7 @@ def home():
 
 @app.get("/<page>")
 def page(page):
-    if page not in ("upload", "search", "files", "bookmarks", "settings"):
+    if page not in ("upload", "search", "files", "bookmarks", "settings", "video"):
         return "Not found", 404
     return send_from_directory("static", f"{page}.html")
 
@@ -169,7 +205,34 @@ def job(jid):
 
 @app.get("/api/videos")
 def videos():
-    return jsonify(core.list_videos())
+    cl = core.clips()
+    out = []
+    for v in core.list_videos():
+        m = json.loads(v.pop("meta") or "{}")
+        out.append({**v, "channel": m.get("channel"), "full": core.is_full(cl.get(v["id"], []), v["duration"]), "nclips": len(cl.get(v["id"], []))})
+    return jsonify(out)
+
+
+@app.get("/api/videos/<vid>")
+def video_info(vid):
+    v = core.video(vid)
+    if not v:
+        return jsonify(error="Vidéo inconnue"), 404
+    cl = core.clips(vid).get(vid, [])
+    for c in cl:
+        c["name"], c["size"] = Path(c["path"]).name, Path(c["path"]).stat().st_size
+    return jsonify({**v, "clips": sorted(cl, key=lambda c: c["start"]), "full": core.is_full(cl, v["duration"]), "bookmarks": core.list_bookmarks(vid), "txt": str(core.txt_file(vid) or "")})
+
+
+@app.post("/api/videos/<vid>/refresh")
+def video_refresh(vid):
+    if not core.video(vid):
+        return jsonify(error="Vidéo inconnue"), 404
+    try:
+        refresh_meta(vid)
+    except Exception as ex:
+        return jsonify(error=f"Impossible de joindre YouTube : {ex}"), 502
+    return jsonify(ok=True)
 
 
 @app.delete("/api/videos/<vid>")
@@ -192,7 +255,7 @@ def get_settings():
 def set_settings():
     d = request.get_json(force=True)
     try:
-        core.save_settings(str(d["subs_dir"]), str(d["videos_dir"]))
+        core.save_settings(str(d["subs_dir"]), str(d["videos_dir"]), str(d.get("quality") or "best"))
     except (ValueError, OSError, KeyError) as ex:
         return jsonify(error=str(ex)), 400
     return jsonify(core.settings())
@@ -278,13 +341,24 @@ def new_clip():
     start, end = (None, None) if d.get("full") else (max(0.0, float(d["start"])), float(d["end"]))
     if start is not None and end - start < 0.5:
         return jsonify(error="Extrait trop court"), 400
+    quality = str(d.get("quality") or core.settings()["quality"])
+    if quality not in core.QUALITIES:
+        return jsonify(error="Qualité inconnue"), 400
     jid = uuid.uuid4().hex[:8]
-    jobs[jid] = {"errors": [], "finished": False, "clip": None}
-    if start is not None and (cid := core.find_clip(vid, start, end)):
-        jobs[jid].update(finished=True, clip=core.clip(cid))
-    else:
-        threading.Thread(target=run_clip, args=(jobs[jid], vid, start, end), daemon=True).start()
+    v = core.video(vid)
+    jobs[jid] = {"kind": "clip", "id": jid, "video_id": vid, "title": v["title"], "errors": [], "finished": False, "clip": None, "progress": None,
+                 "phase": "Préparation", "full": start is None, "started": time.time(), "finished_at": 0,
+                 "label": ("Vidéo entière" if start is None else f"Extrait {core.hms(start)} → {core.hms(end)}") + ("" if quality == "best" else f", {QUALITY_LABEL[quality]}")}
+    threading.Thread(target=run_clip, args=(jobs[jid], vid, start, end, quality), daemon=True).start()
     return jsonify(id=jid)
+
+
+@app.get("/api/clip-jobs")
+def clip_jobs():
+    """Téléchargements en cours + terminés depuis moins d'une minute (pour les notifications de toutes les pages)."""
+    now = time.time()
+    return jsonify([{**j, "elapsed": (j["finished_at"] or now) - j["started"]} for j in jobs.values()
+                    if j.get("kind") == "clip" and (not j["finished"] or now - j["finished_at"] < 60)])
 
 
 def get_clip(cid):

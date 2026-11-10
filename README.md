@@ -10,7 +10,10 @@ Syntaxe de recherche : `mot`, `plusieurs mots`, `"phrase exacte"`, `préfixe*`, 
 Pages :
 - **Recherche** : sur chaque citation, l'icône signet l'enregistre dans une catégorie, l'icône téléchargement ouvre le choix de l'extrait (poignées sur la timeline ou timecodes, sous-titres affichés en direct). Le bouton « Télécharger… » de la vidéo permet aussi de la prendre en entier. Une coche verte = passage disponible hors ligne (clic : ouvre le dossier). Si YouTube ne répond pas ou que la vidéo a été retirée, la lecture se fait depuis le fichier téléchargé, avec ses sous-titres.
 - **Signets** : catégories (créer, renommer, supprimer) et extraits enregistrés.
-- **Paramètres** : dossier des fichiers texte des sous-titres et dossier des vidéos (par défaut `subtitles/` et `videos/`, un sous-dossier par vidéo).
+- **Vidéos** : liste des vidéos ; un clic ouvre leur fiche (chaîne, date, vues, j'aime, description, état hors ligne, citations enregistrées, fichiers téléchargés).
+- **Paramètres** : dossier des fichiers texte des sous-titres, dossier des vidéos (par défaut `subtitles/` et `videos/`, un sous-dossier par vidéo) et qualité de téléchargement par défaut (de 360p à la meilleure, ou audio seul ; modifiable à chaque téléchargement).
+
+Les téléchargements en cours s'affichent en bas à droite, sur toutes les pages, avec une barre de progression.
 
 Chaque fichier texte commence par un en-tête `#` : titre, lien, date de publication, durée, signets et fichiers téléchargés.
 

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Vidéo · Audio-search</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main id="page" aria-busy="true"></main>
+<script src="/static/app.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const vid = params.get('id');
+let v, player;
+
+async function load() {
+  v = await api('/api/videos/' + encodeURIComponent(vid));
+  if (v.error) return $('#page').replaceChildren(h('a', { class: 'back', href: '/files' }, icon('left'), 'Vidéos'), h('div', { class: 'empty' }, h('b', {}, 'Cette vidéo n’est pas dans l’appli'), h('a', { href: '/files' }, 'Voir toutes les vidéos')));
+  document.title = `${v.title} · Audio-search`;
+  render();
+  $('#page').removeAttribute('aria-busy');
+}
+
+function render() {
+  const m = v.meta;
+  const slot = h('div', { class: 'player cover', style: `background-image:url(${thumbUrl(v.id).replace('mqdefault', 'hqdefault')})`, role: 'button', tabindex: 0, 'aria-label': 'Lire la vidéo',
+    onclick: () => { if (slot.classList.contains('cover')) { slot.classList.remove('cover'); player.play(+params.get('t') || 1); } },
+    onkeydown: e => { if (e.key === 'Enter' && slot.classList.contains('cover')) slot.click(); } }, h('div', { class: 'thumb', style: 'width:100%;height:100%;background:transparent' }, h('span', { class: 'play' }, icon('play'))));
+  player = createPlayer(slot, v, () => {});
+  const play = t => { slot.classList.remove('cover'); player.play(t); slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); };
+  const stat = (label, value) => value == null ? null : h('div', {}, h('dt', {}, label), h('dd', {}, value));
+  const dl = (start, end) => openDownload({ vid: v.id, title: v.title, dur: v.duration, start, end, ticks: v.bookmarks.map(b => b.start) });
+
+  const full = v.full
+    ? h('div', { class: 'status ok' }, h('button', { class: 'iconbtn ok', title: 'Afficher le fichier', 'aria-label': 'Afficher le fichier de la vidéo complète', onclick: () => reveal(v.full) }, icon('check', 'big')),
+        h('div', { class: 'grow' }, h('b', {}, 'Vidéo complète disponible hors ligne'), h('span', { class: 'muted' }, 'Elle reste lisible même si elle disparaît de YouTube.')))
+    : h('div', { class: 'status' }, h('button', { class: 'iconbtn', title: 'Télécharger la vidéo entière', 'aria-label': 'Télécharger la vidéo entière', onclick: async () => { await startDownload({ video_id: v.id, full: true }); } }, icon('download', 'big')),
+        h('div', { class: 'grow' }, h('b', {}, 'Vidéo complète non téléchargée'), h('span', { class: 'muted' }, v.clips.length ? `${v.clips.length} extrait${v.clips.length > 1 ? 's' : ''} disponible${v.clips.length > 1 ? 's' : ''} hors ligne.` : 'Rien n’est disponible hors ligne pour l’instant.')),
+        h('button', { class: 'ghost small', onclick: () => dl(0, v.duration) }, 'Choisir un extrait…'));
+
+  fill($('#page'),
+    h('a', { class: 'back', href: '/files' }, icon('left'), 'Vidéos'),
+    h('div', { class: 'vhead' },
+      slot,
+      h('div', {},
+        h('h1', {}, v.title),
+        m.channel && h(m.channel_url ? 'a' : 'span', { class: 'channel', href: m.channel_url, target: '_blank' }, icon('user'), m.channel),
+        h('dl', { class: 'stats' },
+          stat('Publiée le', fmtDate(v.upload_date)),
+          stat('Durée', fmtShort(v.duration || 0)),
+          stat('Vues', m.view_count != null ? fmtNum(m.view_count) : null),
+          stat('J’aime', m.like_count != null ? fmtNum(m.like_count) : null),
+          stat('Commentaires', m.comment_count != null ? fmtNum(m.comment_count) : null),
+          stat('Abonnés de la chaîne', m.channel_follower_count != null ? fmtNum(m.channel_follower_count) : null),
+          stat('Sous-titres', `${v.lang}, ${fmtNum(v.nwords)} mots`),
+          stat('Ajoutée le', new Date(v.added * 1000).toLocaleDateString('fr-FR'))),
+        h('div', { class: 'row' },
+          h('a', { class: 'btn ghost small', href: v.url, target: '_blank' }, icon('external'), 'Ouvrir sur YouTube'),
+          h('button', { class: 'ghost small', onclick: refresh, id: 'refresh' }, icon('refresh'), 'Actualiser les infos')),
+        v.txt && h('p', { class: 'muted' }, 'Sous-titres : ', v.txt))),
+    full,
+    h('section', { class: 'block' },
+      h('div', { class: 'row' }, h('h2', { class: 'grow' }, `Citations enregistrées (${v.bookmarks.length})`), h('a', { href: '/bookmarks', class: 'muted' }, 'Tous les signets')),
+      v.bookmarks.length ? h('div', { class: 'list' }, v.bookmarks.map(b => h('div', { class: 'hit' },
+        h('button', { class: 'tc', type: 'button', onclick: () => play(b.start + 1) }, icon('play'), fmt(b.start)),
+        h('div', {}, h('div', { class: 'quote' }, b.text), h('span', { class: 'chip' }, b.category || 'Sans catégorie')),
+        h('div', { class: 'acts' },
+          offlineBtn(v.id, b.start, b.end, b.clip, () => dl(b.start, b.end)),
+          h('button', { class: 'iconbtn', title: 'Retirer des signets', 'aria-label': 'Retirer des signets', onclick: async () => { await api('/api/bookmarks/' + b.id, undefined, 'DELETE'); load(); } }, icon('trash'))))))
+        : h('div', { class: 'empty panel' }, 'Aucune citation enregistrée. Depuis la recherche, l’icône ', icon('bookmark'), ' ajoute une citation ici.')),
+    h('section', { class: 'block' },
+      h('div', { class: 'row' }, h('h2', { class: 'grow' }, `Fichiers téléchargés (${v.clips.length})`), h('button', { class: 'ghost small', onclick: () => dl(0, v.duration) }, icon('download'), 'Télécharger…')),
+      v.clips.length ? h('div', { class: 'list' }, v.clips.map(c => h('div', { class: 'item' },
+        icon('film', 'big'),
+        h('div', { class: 'grow' },
+          h('div', { class: 'title', title: c.name }, c.name),
+          h('div', { class: 'facts' }, h('span', {}, c.start < 0.05 && c.end >= v.duration - 2 ? 'Vidéo entière' : `${fmt(c.start)} à ${fmt(c.end)}`), h('span', {}, fmtSize(c.size)))),
+        h('button', { class: 'ghost small', onclick: () => { slot.classList.remove('cover'); player.playClip(c); slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } }, icon('play'), 'Lire'),
+        h('button', { class: 'ghost small', onclick: () => reveal(c.id) }, icon('folder'), 'Afficher dans le dossier'))))
+        : h('div', { class: 'empty panel' }, 'Aucun fichier. Les extraits et vidéos téléchargés apparaîtront ici.')),
+    (m.description || m.tags?.length) && h('section', { class: 'block' },
+      h('h2', {}, 'Description'),
+      h('div', { class: 'panel' }, m.description && h('div', { class: 'desc' }, m.description), m.tags?.length && h('div', { class: 'chips', style: 'margin-top:12px' }, m.tags.map(t => h('span', {}, t))))));
+}
+
+async function refresh() {
+  $('#refresh').disabled = true;
+  const r = await api(`/api/videos/${encodeURIComponent(vid)}/refresh`, {});
+  if (r.error) { alert(r.error); $('#refresh').disabled = false; return; }
+  load();
+}
+document.addEventListener('clip', e => { if (e.detail.video_id === vid) load(); });
+load();
+</script>
+</body></html>
