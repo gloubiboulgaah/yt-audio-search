@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Signets</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<h1>Signets</h1>
+<div class="layout">
+  <aside class="panel cats">
+    <ul id="cats"></ul>
+    <form id="newcat" class="row">
+      <input class="grow" id="catname" placeholder="Nouvelle catégorie" aria-label="Nouvelle catégorie" required style="min-width:0">
+      <button>Créer</button>
+    </form>
+  </aside>
+  <section>
+    <input id="filter" placeholder="Filtrer par texte ou titre" aria-label="Filtrer" style="width:100%;margin-bottom:12px">
+    <div id="list"></div>
+  </section>
+</div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+let cats = [], bms = [], cur = 'all';
+
+async function load() {
+  [cats, bms] = await Promise.all([api('/api/categories'), api('/api/bookmarks')]);
+  render();
+}
+
+function render() {
+  const none = bms.filter(b => !b.category_id).length;
+  const item = (key, label, n, ...extra) => h('li', {}, h('button', { class: 'cat' + (cur == key ? ' on' : ''), onclick: () => { cur = key; render(); } }, h('span', {}, label), h('span', { class: 'muted' }, String(n))), ...extra);
+  $('#cats').replaceChildren(
+    item('all', 'Tous', bms.length),
+    item('none', 'Sans catégorie', none),
+    ...cats.map(c => item(c.id, c.name, c.count,
+      h('button', { class: 'iconbtn', title: 'Renommer', 'aria-label': `Renommer ${c.name}`, onclick: async () => {
+        const n = prompt('Nouveau nom', c.name);
+        if (n && n !== c.name) { const r = await api('/api/categories/' + c.id, { name: n }, 'PATCH'); if (r.error) alert(r.error); load(); }
+      } }, icon('pencil')),
+      h('button', { class: 'iconbtn', title: 'Supprimer', 'aria-label': `Supprimer ${c.name}`, onclick: async () => {
+        if (!confirm(`Supprimer la catégorie « ${c.name} » ? Ses signets passent dans « Sans catégorie ».`)) return;
+        await api('/api/categories/' + c.id, undefined, 'DELETE');
+        if (cur == c.id) cur = 'all';
+        load();
+      } }, icon('trash')))));
+  const q = $('#filter').value.toLowerCase();
+  const shown = bms.filter(b => (cur === 'all' || (cur === 'none' ? !b.category_id : b.category_id == cur)) && (b.text + b.title).toLowerCase().includes(q));
+  $('#list').replaceChildren(...(shown.length ? shown.map(row) : [h('p', { class: 'muted' }, 'Aucun signet. Ajoutez-en depuis la page Recherche avec l’icône ', icon('bookmark'), '.')]));
+}
+
+function row(b) {
+  const sel = h('select', { 'aria-label': 'Catégorie', onchange: async () => { await api('/api/bookmarks/' + b.id, { category_id: sel.value ? +sel.value : null }, 'PATCH'); load(); } },
+    h('option', { value: '' }, 'Sans catégorie'), ...cats.map(c => h('option', { value: c.id }, c.name)));
+  sel.value = b.category_id || '';
+  const ticks = bms.filter(x => x.video_id === b.video_id).map(x => x.start);
+  return h('div', { class: 'bm' },
+    h('div', { class: 'row' },
+      h('div', { class: 'grow' },
+        h('div', {}, h('a', { class: 'tc', href: `${b.url}&t=${Math.floor(b.start)}s`, target: '_blank' }, `${fmt(b.start)} → ${fmt(b.end)}`), ' · ', h('b', {}, b.title)),
+        h('div', {}, '« ', b.text, ' »')),
+      h('div', { class: 'acts' },
+        sel,
+        offlineBtn(b.video_id, b.start, b.end, b.clip, () => openDownload({ vid: b.video_id, title: b.title, dur: b.duration, start: b.start, end: b.end, ticks })),
+        h('button', { class: 'iconbtn', title: 'Supprimer le signet', 'aria-label': 'Supprimer le signet', onclick: async () => { await api('/api/bookmarks/' + b.id, undefined, 'DELETE'); load(); } }, icon('trash')))));
+}
+
+$('#newcat').addEventListener('submit', async e => {
+  e.preventDefault();
+  const r = await api('/api/categories', { name: $('#catname').value });
+  if (r.error) return alert(r.error);
+  $('#catname').value = '';
+  cur = r.id;
+  load();
+});
+$('#filter').addEventListener('input', render);
+document.addEventListener('clip', e => bms.forEach(b => { if (!b.clip && b.video_id === e.detail.video_id && e.detail.start - 0.05 <= b.start && b.end <= e.detail.end + 0.05) b.clip = e.detail.id; }));
+load();
+</script>
+</body></html>

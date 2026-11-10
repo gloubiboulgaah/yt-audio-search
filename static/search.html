@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Recherche</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<h1>Recherche</h1>
+<form class="panel" id="f">
+  <div class="row">
+    <input class="grow" id="q" placeholder='mot, plusieurs mots, "phrase exacte", préfix*, -exclu' aria-label="Recherche" autofocus>
+    <button>Rechercher</button>
+  </div>
+  <div class="opts">
+    <label>Mode
+      <select id="mode">
+        <option value="all">Tous les mots</option>
+        <option value="any">Au moins un mot</option>
+        <option value="phrase">Phrase (mots dans l'ordre)</option>
+      </select></label>
+    <label>Tolérance : <span id="tolv"></span>
+      <input type="range" id="tol" min="50" max="100" value="85"></label>
+    <label>Fenêtre de proximité (s, 0 = toute la vidéo)
+      <input type="number" id="window" min="0" value="30"></label>
+    <label>Mots intercalés max dans une phrase
+      <input type="number" id="gap" min="0" max="10" value="1"></label>
+    <label>Mots de contexte dans la citation
+      <input type="number" id="context" min="0" max="60" value="10"></label>
+    <label>Tri
+      <select id="sort">
+        <option value="score">Pertinence</option>
+        <option value="hits">Nombre d'occurrences</option>
+        <option value="recent">Ajout récent</option>
+        <option value="title">Titre</option>
+      </select></label>
+    <label>Max vidéos (0 = illimité)
+      <input type="number" id="limit" min="0" value="0"></label>
+    <label>Vidéos (aucune = toutes)
+      <select id="videos" multiple size="3"></select></label>
+    <label class="check"><input type="checkbox" id="partial"> Le terme peut être une partie d'un mot</label>
+  </div>
+</form>
+<div id="info" class="muted"></div>
+<div id="out"></div>
+</main>
+<script src="/static/app.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const players = {};
+const ytFailed = new Set();
+const showTol = () => $('#tolv').textContent = $('#tol').value == 100 ? '100 % (exact)' : $('#tol').value + ' %';
+$('#tol').addEventListener('input', showTol); showTol();
+api('/api/videos').then(vs => $('#videos').replaceChildren(...vs.map(v => h('option', { value: v.id }, v.title))));
+
+function play(card, v, t) {
+  t = Math.max(0, t - 1);
+  if (!window.YT?.Player || ytFailed.has(v.id)) return playLocal(card, v, t);
+  const p = players[v.id];
+  if (p && !p.local && p.seekTo) { p.seekTo(t, true); p.playVideo(); return; }
+  const div = h('div');
+  card.querySelector('.player').replaceChildren(div);
+  players[v.id] = new YT.Player(div, { videoId: v.id, playerVars: { start: Math.floor(t), autoplay: 1 }, events: {
+    onReady: e => { e.target.seekTo(t, true); e.target.playVideo(); },
+    onError: () => { ytFailed.add(v.id); playLocal(card, v, t); }, // vidéo retirée / privée / non intégrable
+  } });
+}
+
+// Lecture depuis un extrait téléchargé qui contient t (le plus long d'abord).
+function playLocal(card, v, t) {
+  const slot = card.querySelector('.player');
+  const c = v.clips.find(c => c.start - 0.05 <= t + 1 && t < c.end);
+  if (!c) {
+    delete players[v.id];
+    return slot.replaceChildren(h('div', { class: 'nooff' }, 'YouTube indisponible et ce passage n’est pas téléchargé. ', h('a', { href: v.url, target: '_blank' }, 'Ouvrir sur YouTube')));
+  }
+  let p = players[v.id];
+  if (!p?.local || p.clip !== c) {
+    const el = h('video', { controls: '', autoplay: '', onclick: e => e.stopPropagation(), src: `/api/clips/${c.id}/file` }, h('track', { kind: 'subtitles', srclang: 'fr', label: 'Sous-titres', src: `/api/clips/${c.id}/vtt`, default: '' }));
+    slot.replaceChildren(el);
+    p = players[v.id] = { local: el, clip: c, getCurrentTime: () => c.start + el.currentTime, getDuration: () => v.duration };
+  }
+  p.local.currentTime = Math.max(0, t - c.start);
+  p.local.play();
+}
+
+setInterval(() => {
+  for (const [id, p] of Object.entries(players)) {
+    const c = document.querySelector(`[data-id="${CSS.escape(id)}"] .cursor`);
+    if (c && p.getCurrentTime && p.getDuration()) c.style.left = (100 * p.getCurrentTime() / p.getDuration()) + '%';
+  }
+}, 500);
+
+function card(v) {
+  const dur = v.duration || Math.max(...v.hits.map(x => x.t)) + 5;
+  const el = h('div', { class: 'video', 'data-id': v.id });
+  const go = t => play(el, v, t);
+  const ticks = v.hits.map(x => x.t);
+  const dl = (start, end) => openDownload({ vid: v.id, title: v.title, dur, start, end, ticks });
+  document.addEventListener('clip', e => { if (e.detail.video_id === v.id) v.clips.push(e.detail); });
+  const bar = h('div', { class: 'bar', title: 'Cliquer pour aller à ce moment', onclick: e => { const r = bar.getBoundingClientRect(); go(dur * (e.clientX - r.left) / r.width + 1); } },
+    h('div', { class: 'cursor' }),
+    ...v.hits.map(x => h('div', { class: 'tick', style: `left:${100 * x.t / dur}%`, title: fmt(x.t), onclick: e => { e.stopPropagation(); go(x.t); } })));
+  el.append(
+    h('div', { class: 'row' }, h('h2', { class: 'grow' }, v.title), h('button', { class: 'ghost', type: 'button', onclick: () => dl(0, dur) }, icon('download'), ' Télécharger…')),
+    h('div', { class: 'muted' }, h('a', { href: v.url, target: '_blank' }, v.url), ` · ${v.hits.length} occurrence(s) · ${fmt(dur)}`, v.clips.length ? ` · ${v.clips.length} fichier(s) hors ligne` : ''),
+    h('div', { class: 'player', onclick: () => go(v.hits[0].t) }, h('img', { src: `https://i.ytimg.com/vi/${encodeURIComponent(v.id)}/hqdefault.jpg`, alt: v.title })),
+    bar,
+    ...v.hits.map(x => {
+      const found = x.quote.filter(q => q[1]).map(q => q[2]);
+      const start = x.quote[0][2];
+      return h('div', { class: 'hit' },
+        h('a', { class: 'tc', href: `${v.url}&t=${Math.floor(x.t)}s`, onclick: e => { e.preventDefault(); go(x.t); } }, fmt(x.t)),
+        h('div', { class: 'grow' }, '… ', ...x.quote.map(([w, m]) => [m ? h('mark', {}, w) : w, ' ']), '…'),
+        h('div', { class: 'acts' },
+          bookmarkBtn({ video_id: v.id, start, end: x.end, text: x.quote.map(q => q[0]).join(' ') }, x.bookmark),
+          offlineBtn(v.id, Math.min(...found), Math.max(...found), x.clip, () => dl(start, x.end))));
+    }));
+  return el;
+}
+
+$('#f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  for (const k in players) delete players[k];
+  $('#info').textContent = 'Recherche…';
+  const body = Object.fromEntries(['q', 'mode', 'tol', 'window', 'gap', 'context', 'sort', 'limit'].map(k => [k, $('#' + k).value]));
+  body.partial = $('#partial').checked;
+  body.videos = [...$('#videos').selectedOptions].map(o => o.value);
+  const t0 = performance.now();
+  const r = await api('/api/search', body);
+  const exp = Object.entries(r.expansions).filter(([k, v]) => v.length > 1 || v[0] !== k);
+  $('#info').replaceChildren(
+    h('div', {}, `${r.results.length} vidéo(s), ${r.total_hits} occurrence(s) — ${Math.round(performance.now() - t0)} ms`),
+    ...exp.map(([k, v]) => h('div', { class: 'chips' }, `« ${k} » → `, ...v.map(w => h('span', {}, w)))));
+  $('#out').replaceChildren(...r.results.map(card));
+});
+</script>
+</body></html>

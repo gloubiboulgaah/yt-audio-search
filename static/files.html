@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Fichiers</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<h1>Fichiers</h1>
+<div class="row panel">
+  <input class="grow" id="filter" placeholder="Filtrer par titre ou id" aria-label="Filtrer">
+  <button class="danger" id="del" disabled>Supprimer la sélection</button>
+</div>
+<table><thead><tr><th><input type="checkbox" id="all" aria-label="Tout sélectionner"></th><th>Titre</th><th>Durée</th><th>Mots</th><th>Ajouté</th><th></th></tr></thead><tbody id="list"></tbody></table>
+</main>
+<script src="/static/app.js"></script>
+<script>
+let videos = [];
+const boxes = () => [...document.querySelectorAll('#list input:checked')];
+const sync = () => $('#del').disabled = !boxes().length;
+async function remove(ids) {
+  if (!confirm(`Supprimer ${ids.length} vidéo(s) ?`)) return;
+  for (const id of ids) await api('/api/videos/' + encodeURIComponent(id), undefined, 'DELETE');
+  load();
+}
+function render() {
+  const q = $('#filter').value.toLowerCase();
+  $('#list').replaceChildren(...videos.filter(v => (v.title + v.id).toLowerCase().includes(q)).map(v => h('tr', {},
+    h('td', {}, h('input', { type: 'checkbox', value: v.id, onchange: sync, 'aria-label': v.title })),
+    h('td', {}, h('a', { href: v.url, target: '_blank' }, v.title), h('div', { class: 'muted' }, v.id + ' · ' + v.lang)),
+    h('td', {}, fmt(v.duration)),
+    h('td', {}, String(v.nwords)),
+    h('td', {}, new Date(v.added * 1000).toLocaleString()),
+    h('td', {}, h('button', { class: 'ghost', onclick: () => remove([v.id]) }, 'Supprimer')))));
+  $('#all').checked = false; sync();
+}
+async function load() { videos = await api('/api/videos'); render(); }
+$('#filter').addEventListener('input', render);
+$('#all').addEventListener('change', e => { document.querySelectorAll('#list input').forEach(b => b.checked = e.target.checked); sync(); });
+$('#del').addEventListener('click', () => remove(boxes().map(b => b.value)));
+load();
+</script>
+</body></html>

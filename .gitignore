@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+data.db*
+subtitles/
+videos/
+.DS_Store

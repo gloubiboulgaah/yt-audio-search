@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Upload</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<h1>Ajouter une vidéo ou une playlist</h1>
+<form class="panel row" id="f">
+  <input class="grow" id="url" placeholder="https://www.youtube.com/watch?v=… ou https://www.youtube.com/playlist?list=…" required aria-label="URL">
+  <input id="lang" value="fr" size="4" aria-label="Langue des sous-titres" title="Langue des sous-titres">
+  <button id="go">Télécharger</button>
+</form>
+<div id="jobs"></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+$('#f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const r = await api('/api/download', { url: $('#url').value, lang: $('#lang').value });
+  if (r.error) return alert(r.error);
+  $('#url').value = '';
+  const box = h('div', { class: 'panel' });
+  $('#jobs').prepend(box);
+  const tick = async () => {
+    const j = await api('/api/jobs/' + r.id);
+    const n = j.done + j.skipped + j.errors.length;
+    box.replaceChildren(
+      h('div', { class: 'muted' }, j.url),
+      h('progress', { max: j.total || 1, value: j.finished ? (j.total || 1) : n }),
+      h('div', {}, j.finished ? 'Terminé' : (j.total ? `${n} / ${j.total}` : 'Analyse du lien…'), j.current ? ` — ${j.current}` : ''),
+      h('div', { class: 'muted' }, `${j.done} ajoutée(s), ${j.skipped} déjà présente(s), ${j.errors.length} erreur(s)`),
+      ...j.errors.map(e => h('div', { class: 'err' }, e)));
+    if (!j.finished) setTimeout(tick, 1000);
+  };
+  tick();
+});
+</script>
+</body></html>
